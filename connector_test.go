@@ -559,7 +559,7 @@ func TestDescriptionTruncationKeepsRunesWhole(t *testing.T) {
 	}
 	d := c.Tools()[0].Description
 	if !utf8.ValidString(d) || strings.ContainsRune(d, utf8.RuneError) || len(d) > 1024 || !strings.HasSuffix(d, "…") {
-		t.Fatalf("description: valid=%v len=%d tail=%q", utf8.ValidString(d), len(d), d[len(d)-8:])
+		t.Fatalf("description: valid=%v len=%d tail=%q", utf8.ValidString(d), len(d), d[max(0, len(d)-8):])
 	}
 }
 
@@ -584,6 +584,17 @@ func TestErrorBodyTruncationIsExact(t *testing.T) {
 	body = strings.Repeat("x", 5000)
 	if r := call(); !r.Truncated || len(r.Body) != 2048 {
 		t.Fatalf("a long error body is truncated: %v %d", r.Truncated, len(r.Body))
+	}
+	// A response cap below hit's error cap must not panic.
+	m := manifest(connectors.Auth{Type: connectors.AuthNone})
+	m.Check = nil
+	small, err := connectors.New(m, fixtureDoc(t), connectors.WithBaseURL(srv.URL), connectors.WithMaxResponseBytes(1000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := small.Execute(context.Background(), nil, "STAYS_GET_PROPERTY", json.RawMessage(`{"property_id":"p"}`))
+	if err != nil || !r.Truncated || len(r.Body) != 1000 {
+		t.Fatalf("small cap: %v truncated=%v len=%d", err, r.Truncated, len(r.Body))
 	}
 }
 

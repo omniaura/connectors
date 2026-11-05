@@ -37,7 +37,8 @@ const (
 	DefaultMaxSpecBytes = 16 << 20
 	maxDescription      = 1024
 	maxToolName         = 64
-	// upstreamBodyCap is how much of a non-2xx body go-kit hit keeps.
+	// upstreamBodyCap mirrors maxUpstreamBody in go-kit net/hit (errors.go,
+	// be13686): how much of a non-2xx body hit keeps before appending "…".
 	upstreamBodyCap = 2048
 )
 
@@ -786,13 +787,14 @@ func (c *Connector) send(ctx context.Context, method, path, logPath string, quer
 	var e *errs.Error
 	if errors.As(err, &e) {
 		if up, ok := e.UpstreamInfo(); ok && up.Status > 0 {
-			r := c.result(up.Status, []byte(up.Body))
 			// hit keeps the first upstreamBodyCap bytes and appends "…", so a
 			// kept body of exactly that length is the only truncated shape.
-			if len(up.Body) == upstreamBodyCap+len("…") && strings.HasSuffix(up.Body, "…") {
-				r.Body = r.Body[:upstreamBodyCap]
-				r.Truncated = true
+			body, cut := up.Body, false
+			if len(body) == upstreamBodyCap+len("…") && strings.HasSuffix(body, "…") {
+				body, cut = body[:upstreamBodyCap], true
 			}
+			r := c.result(up.Status, []byte(body)) // may cap it further
+			r.Truncated = r.Truncated || cut
 			return r, nil
 		}
 	}
