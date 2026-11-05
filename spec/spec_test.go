@@ -1,6 +1,7 @@
 package spec_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -55,6 +56,65 @@ components:
 	}
 	if op.ShortID() != "makeLoop" {
 		t.Fatalf("non-FastAPI ids are kept: %s", op.ShortID())
+	}
+}
+
+// Each nesting level used to count toward the ref limit, so a FastAPI body a
+// few models deep came out with "type": {} — an invalid schema.
+func TestDeepModelsKeepTheirTypes(t *testing.T) {
+	schemas := `"L6":{"type":"object","properties":{"leaf":{"type":"string","enum":["a","b"]}},"required":["leaf"]}`
+	for i := 5; i >= 0; i-- {
+		schemas += fmt.Sprintf(`,"L%d":{"type":"object","properties":{"next":{"anyOf":[{"$ref":"#/components/schemas/L%d"},{"type":"null"}]}}}`, i, i+1)
+	}
+	doc, err := spec.Parse([]byte(`{"openapi":"3.1.0","paths":{"/deep":{"post":{"requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/L0"}}}}}}},"components":{"schemas":{` + schemas + `}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var node any = doc.Operations[0].Body.Schema
+	for i := 0; i <= 5; i++ {
+		node = node.(map[string]any)["properties"].(map[string]any)["next"].(map[string]any)["anyOf"].([]any)[0]
+	}
+	leaf := node.(map[string]any)["properties"].(map[string]any)["leaf"].(map[string]any)
+	if leaf["type"] != "string" || len(leaf["enum"].([]any)) != 2 {
+		t.Fatalf("leaf = %v", leaf)
+	}
+}
+
+func TestFanOutIsBounded(t *testing.T) {
+	// Each level references the next twice: 2^30 nodes if expanded naively.
+	schemas := `"S30":{"type":"string"}`
+	for i := 29; i >= 0; i-- {
+		schemas += fmt.Sprintf(`,"S%d":{"type":"object","properties":{"l":{"$ref":"#/components/schemas/S%d"},"r":{"$ref":"#/components/schemas/S%d"}}}`, i, i+1, i+1)
+	}
+	doc, err := spec.Parse([]byte(`{"openapi":"3.1.0","paths":{"/bomb":{"post":{"requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/S0"}}}}}},"/ok":{"get":{}}},"components":{"schemas":{` + schemas + `}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Operations) != 1 || doc.Operations[0].Path != "/ok" {
+		t.Fatalf("operations = %+v", doc.Operations)
+	}
+	if len(doc.Skipped) != 1 || !strings.Contains(doc.Skipped[0].Reason, "too large") {
+		t.Fatalf("skipped = %+v", doc.Skipped)
+	}
+}
+
+func TestPathsMustStayOnTheHost(t *testing.T) {
+	doc, err := spec.Parse([]byte(`{"openapi":"3.1.0","paths":{"@evil.example/x":{"get":{}},"//evil.example/y":{"get":{}},"/a?b=1":{"get":{}},"/fine":{"get":{}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Operations) != 1 || doc.Operations[0].Path != "/fine" || len(doc.Skipped) != 3 {
+		t.Fatalf("operations = %+v skipped = %+v", doc.Operations, doc.Skipped)
+	}
+}
+
+func TestUnsupportedQueryStylesAreSkipped(t *testing.T) {
+	doc, err := spec.Parse([]byte(`{"openapi":"3.1.0","paths":{"/a":{"get":{"parameters":[{"name":"f","in":"query","style":"deepObject","schema":{"type":"object"}}]}},"/b":{"get":{"parameters":[{"name":"ids","in":"query","style":"pipeDelimited","schema":{"type":"array"}}]}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Operations) != 0 || len(doc.Skipped) != 2 {
+		t.Fatalf("operations = %+v skipped = %+v", doc.Operations, doc.Skipped)
 	}
 }
 

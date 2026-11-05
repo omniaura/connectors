@@ -49,11 +49,11 @@ tools:
 | Manifest key | Meaning |
 |---|---|
 | `spec` | https URL or a path relative to the manifest |
-| `base_url` | overrides the document's first server; required when it has none |
+| `base_url` | where requests and credentials go; required unless `auth.type` is `none` |
 | `auth.type` | `bearer`, `header` (with `name`, optional `prefix`), `query` (with `name`), `basic`, `none` |
 | `check` | request that validates credentials; `rejected_status` defaults to `[401, 403]` |
-| `tools.include` / `exclude` | operation IDs (full or FastAPI-short) or tool names; an `include` that matches nothing is an error |
-| `tools.names` | rename a tool: `{operationId: NEW_NAME}` |
+| `tools.include` / `exclude` | operation IDs (full or FastAPI-short) or tool names; an entry that matches nothing is an error |
+| `tools.names` | rename the part after the slug: `{operationId: find_hotels}` gives `SLUG_FIND_HOTELS`; a full operation ID wins over a short one |
 | `tools.allow_writes` | `false` keeps only GET and HEAD |
 
 ## What the library guarantees
@@ -61,8 +61,10 @@ tools:
 - **Credentials go where the manifest says, once.** A pasted `Bearer ` prefix
   is not doubled. The document's own `Authorization` parameter, and any
   header the connector sets, never become model arguments.
-- **Credentials never leave the app's host.** Redirects to another host are
-  returned as results, not followed.
+- **Credentials never leave the app's host.** They go only to `base_url`;
+  document paths that are not absolute paths are skipped, every request URL
+  is checked against the base host, and redirects to another host are
+  returned as results, not followed. No cookie jar is shared between people.
 - **Arguments are checked before anything is sent**: unknown names, missing
   required values, `..` path segments and header line breaks are refused with
   an error that names the argument, so a model can correct the call.
@@ -74,15 +76,18 @@ tools:
   calls that never got an answer, and they follow
   [go-kit `errs`](https://github.com/omniaura/go-kit/tree/main/errs): the
   message is safe to show a person, details stay server-side.
-- **Bounded.** Responses are capped (256 KiB by default) and marked truncated;
-  specs are capped at 16 MiB; requests time out after 30 s.
+- **Bounded.** Successful responses are capped (256 KiB by default) and
+  marked truncated; non-2xx bodies are kept up to 2 KiB; specs are capped at
+  16 MiB and `$ref` expansion at 200,000 nodes per operation; requests time
+  out after 30 s. Every success is reported as status 200.
 
 Schemas come out as plain JSON Schema: local `$ref`s are expanded inline,
 recursion is cut off, OpenAPI-only keys (`example`, `x-*`, `readOnly`
 properties) are dropped and 3.0 `nullable` is folded into `type`. A JSON
 object body with fixed properties is flattened into top-level arguments;
 anything else is a single `body` argument. Operations the library cannot
-call faithfully (form or multipart bodies, deprecated operations) are listed
+call faithfully (form or multipart bodies, query styles other than `form`,
+deprecated operations, schemas too large to expand) are listed
 by `Skipped()` with the reason, never guessed at.
 
 ## agentflow

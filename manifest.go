@@ -22,8 +22,8 @@ type Manifest struct {
 	// Spec is the OpenAPI document: an https URL, or a path relative to
 	// the manifest file.
 	Spec string `yaml:"spec" json:"spec"`
-	// BaseURL overrides the document's first server. Required when the
-	// document declares none.
+	// BaseURL is where requests (and credentials) go. Required unless auth
+	// is none; then it defaults to the document's first server.
 	BaseURL string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
 	Docs    string `yaml:"docs,omitempty" json:"docs,omitempty"`
 	Auth    Auth   `yaml:"auth" json:"auth"`
@@ -120,6 +120,10 @@ func (m *Manifest) Validate() error {
 		if err := checkBaseURL(m.BaseURL); err != nil {
 			return fmt.Errorf("manifest %s: %w", m.Slug, err)
 		}
+	} else if m.Auth.Type != AuthNone {
+		// Credentials go only to a host the manifest names, never to a
+		// server taken from a separately fetched document.
+		return fmt.Errorf("manifest %s: base_url is required when auth is not none", m.Slug)
 	}
 	a := &m.Auth
 	switch a.Type {

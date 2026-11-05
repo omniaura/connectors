@@ -15,9 +15,14 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// MaxRefDepth bounds $ref expansion. Deeper (or recursive) schemas are cut
-// off and replaced by a schema that accepts any value.
+// MaxRefDepth bounds how many $refs deep expansion follows. Deeper (or
+// recursive) references are replaced by a schema that accepts any value.
 const MaxRefDepth = 24
+
+// MaxNodes bounds the total size of one operation after $ref expansion, so
+// a document that references shared schemas many times cannot grow
+// exponentially. An operation over the limit is skipped.
+const MaxNodes = 200_000
 
 // Document is a parsed OpenAPI document.
 type Document struct {
@@ -28,7 +33,8 @@ type Document struct {
 	// Skipped lists operations that could not be turned into a callable shape.
 	Skipped []Skip
 
-	root map[string]any
+	root  map[string]any
+	nodes int // nodes expanded for the operation being read
 }
 
 // Skip records an operation that was left out and why.
@@ -102,9 +108,21 @@ func Parse(data []byte) (*Document, error) {
 	}
 	sort.Strings(keys)
 	for _, path := range keys {
-		item, ok := d.resolve(paths[path], 0, nil).(map[string]any)
+		// The path is appended to the base URL: anything but an absolute
+		// path could change the host the credential is sent to.
+		if !strings.HasPrefix(path, "/") || strings.ContainsAny(path, "?#\\") || strings.HasPrefix(path, "//") {
+			d.Skipped = append(d.Skipped, Skip{Path: path, Reason: "path is not an absolute path"})
+			continue
+		}
+		item, ok := paths[path].(map[string]any)
 		if !ok {
 			continue
+		}
+		if _, isRef := item["$ref"]; isRef {
+			d.nodes = 0
+			if item, ok = d.resolve(item, 0, nil).(map[string]any); !ok {
+				continue
+			}
 		}
 		shared := asSlice(item["parameters"])
 		for _, method := range methods {
@@ -112,7 +130,11 @@ func Parse(data []byte) (*Document, error) {
 			if !ok {
 				continue
 			}
+			d.nodes = 0
 			op, reason := d.operation(strings.ToUpper(method), path, raw, shared)
+			if reason == "" && d.nodes > MaxNodes {
+				reason = "schemas are too large after $ref expansion"
+			}
 			if reason != "" {
 				d.Skipped = append(d.Skipped, Skip{Method: strings.ToUpper(method), Path: path, OperationID: op.ID, Reason: reason})
 				continue
@@ -158,7 +180,14 @@ func (d *Document) operation(method, path string, raw map[string]any, shared []a
 			switch param.In {
 			case "path":
 				param.Required = true
-			case "query", "header":
+				if param.Style != "" && param.Style != "simple" {
+					return fmt.Sprintf("path parameter %q uses unsupported style %q", param.Name, param.Style)
+				}
+			case "query":
+				if param.Style != "" && param.Style != "form" {
+					return fmt.Sprintf("query parameter %q uses unsupported style %q", param.Name, param.Style)
+				}
+			case "header":
 			case "cookie":
 				continue
 			default:
@@ -234,12 +263,16 @@ func pickJSON(content map[string]any) string {
 // resolve expands local $refs in v. stack holds the refs being expanded so a
 // recursive schema is cut off instead of looping.
 func (d *Document) resolve(v any, depth int, stack []string) any {
-	if depth > MaxRefDepth {
+	d.nodes++
+	if d.nodes > MaxNodes {
 		return map[string]any{}
 	}
 	switch t := v.(type) {
 	case map[string]any:
 		if ref, ok := t["$ref"].(string); ok {
+			if depth >= MaxRefDepth {
+				return map[string]any{}
+			}
 			for _, s := range stack {
 				if s == ref {
 					return map[string]any{"description": "Recursive " + refName(ref) + " (any value)."}
@@ -259,7 +292,7 @@ func (d *Document) resolve(v any, depth int, stack []string) any {
 					}
 					for k, v := range t {
 						if k != "$ref" {
-							out[k] = d.resolve(v, depth+1, stack)
+							out[k] = d.resolve(v, depth, stack)
 						}
 					}
 					return out
@@ -269,13 +302,13 @@ func (d *Document) resolve(v any, depth int, stack []string) any {
 		}
 		out := make(map[string]any, len(t))
 		for k, val := range t {
-			out[k] = d.resolve(val, depth+1, stack)
+			out[k] = d.resolve(val, depth, stack)
 		}
 		return out
 	case []any:
 		out := make([]any, len(t))
 		for i, val := range t {
-			out[i] = d.resolve(val, depth+1, stack)
+			out[i] = d.resolve(val, depth, stack)
 		}
 		return out
 	default:

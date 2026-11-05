@@ -27,7 +27,7 @@ func TestCatalogRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := connectors.New(connectors.Manifest{Slug: "demo", Spec: "inline", Auth: connectors.Auth{Type: connectors.AuthBearer}}, doc, connectors.WithBaseURL(srv.URL))
+	c, err := connectors.New(connectors.Manifest{Slug: "demo", Spec: "inline", BaseURL: "https://demo.example", Auth: connectors.Auth{Type: connectors.AuthBearer}}, doc, connectors.WithBaseURL(srv.URL))
 	if err != nil {
 		t.Fatal(err)
 	}

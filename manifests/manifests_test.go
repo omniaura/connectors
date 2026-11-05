@@ -42,6 +42,12 @@ func TestLiveBluePillow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, tool := range c.Tools() {
+		if tool.Name == "BLUEPILLOW_CREATE_KEY" || tool.Name == "BLUEPILLOW_HEALTH" {
+			t.Fatalf("%s must be excluded", tool.Name)
+		}
+	}
+	t.Logf("%d tools, %d skipped operations", len(c.Tools()), len(c.Skipped()))
 	creds := connectors.Credentials{"api_key": key}
 	if err := c.Check(ctx, creds); err != nil {
 		t.Fatalf("valid key rejected: %v", err)

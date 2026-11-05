@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -32,12 +33,13 @@ func fixtureDoc(t *testing.T) *spec.Document {
 
 func manifest(auth connectors.Auth) connectors.Manifest {
 	return connectors.Manifest{
-		Slug:  "stays",
-		Name:  "Stays",
-		Spec:  "testdata/stays.json",
-		Auth:  auth,
-		Check: &connectors.Check{Path: "/v1/keys/{api_key}/stats"},
-		Tools: connectors.ToolFilter{Exclude: []string{"health", "create_key"}},
+		Slug:    "stays",
+		Name:    "Stays",
+		Spec:    "testdata/stays.json",
+		BaseURL: "https://stays.example",
+		Auth:    auth,
+		Check:   &connectors.Check{Path: "/v1/keys/{api_key}/stats"},
+		Tools:   connectors.ToolFilter{Exclude: []string{"health", "create_key"}},
 	}
 }
 
@@ -375,6 +377,14 @@ func TestCredentialsDoNotFollowCrossHostRedirects(t *testing.T) {
 	defer srv.Close()
 	for _, auth := range []connectors.Auth{{Type: connectors.AuthBearer}, {Type: connectors.AuthQuery, Name: "key"}} {
 		c := newConnector(t, auth, srv)
+		// A caller's own client must not re-enable redirect following.
+		own, err := connectors.New(manifest(auth), fixtureDoc(t), connectors.WithBaseURL(srv.URL), connectors.WithHTTPClient(&http.Client{}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r, err := own.Execute(context.Background(), connectors.Credentials{"api_key": "secret"}, "STAYS_GET_PROPERTY", json.RawMessage(`{"property_id":"p"}`)); err != nil || r.Status != http.StatusFound {
+			t.Fatalf("WithHTTPClient: %v %d", err, r.Status)
+		}
 		r, err := c.Execute(context.Background(), connectors.Credentials{"api_key": "secret"}, "STAYS_GET_PROPERTY", json.RawMessage(`{"property_id":"p"}`))
 		if err != nil {
 			t.Fatal(err)
@@ -418,16 +428,67 @@ func TestManifestValidation(t *testing.T) {
 		"slug: ok\nspec: x\nbase_url: http://example.com\nauth: {type: bearer}\n",
 		"slug: ok\nspec: x\nauth: {type: bearer}\ncheck: {path: /v1/{nope}}\n",
 		"slug: ok\nspec: x\nauth: {type: bearer}\nunknown_key: 1\n",
-		"slug: ok\nspec: x\nauth: {type: bearer}\ncheck: {path: /x, rejected_status: [500]}\n",
+		"slug: ok\nspec: x\nbase_url: https://x.example\nauth: {type: bearer}\ncheck: {path: /x, rejected_status: [500]}\n",
+		"slug: ok\nspec: x\nauth: {type: bearer}\n", // credentials need a base_url the manifest names
 	}
 	for _, src := range bad {
 		if _, err := connectors.ParseManifest([]byte(src)); err == nil {
 			t.Errorf("accepted invalid manifest:\n%s", src)
 		}
 	}
-	m, err := connectors.ParseManifest([]byte("slug: ok\nspec: x\nauth: {type: basic}\n"))
+	m, err := connectors.ParseManifest([]byte("slug: ok\nspec: x\nbase_url: https://x.example\nauth: {type: basic}\n"))
 	if err != nil || len(m.Auth.Fields) != 2 {
 		t.Fatalf("basic defaults: %v %+v", err, m.Auth)
+	}
+}
+
+func TestExcludeMustMatch(t *testing.T) {
+	m := manifest(connectors.Auth{Type: connectors.AuthBearer})
+	m.Tools = connectors.ToolFilter{Exclude: []string{"create_key", "renamed_upstream"}}
+	if _, err := connectors.New(m, fixtureDoc(t)); err == nil {
+		t.Fatal("an exclude entry that matches nothing must fail loudly: the tool it hid may now be offered")
+	}
+}
+
+func TestNoCookiesSharedBetweenPeople(t *testing.T) {
+	var sawCookie atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := r.Cookie("session"); err == nil {
+			sawCookie.Store(true)
+		}
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "person-a", Path: "/"})
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer srv.Close()
+	jar, _ := cookiejar.New(nil)
+	c, err := connectors.New(manifest(connectors.Auth{Type: connectors.AuthBearer}), fixtureDoc(t),
+		connectors.WithBaseURL(srv.URL), connectors.WithHTTPClient(&http.Client{Jar: jar}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, who := range []string{"a", "b"} {
+		if _, err := c.Execute(context.Background(), connectors.Credentials{"api_key": who}, "STAYS_GET_PROPERTY", json.RawMessage(`{"property_id":"p"}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sawCookie.Load() {
+		t.Fatal("a cookie set for one person's call was sent on another's")
+	}
+}
+
+func TestDotSegmentsFromAdjacentArguments(t *testing.T) {
+	doc, err := spec.Parse([]byte(`{"openapi":"3.1.0","paths":{"/x/{a}{b}":{"get":{"operationId":"pair","parameters":[{"name":"a","in":"path","schema":{"type":"string"}},{"name":"b","in":"path","schema":{"type":"string"}}]}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := connectors.Manifest{Slug: "dots", Spec: "inline", BaseURL: "https://dots.example", Auth: connectors.Auth{Type: connectors.AuthBearer}}
+	c, err := connectors.New(m, doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Execute(context.Background(), connectors.Credentials{"api_key": "k"}, "DOTS_PAIR", json.RawMessage(`{"a":".","b":"."}`))
+	if !connectors.ErrInvalidArguments.Is(err) {
+		t.Fatalf("a . and . must not form ..: %v", err)
 	}
 }
 

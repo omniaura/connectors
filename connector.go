@@ -65,6 +65,9 @@ type input struct {
 
 // Result is the app's HTTP answer to a tool call. Non-2xx answers are
 // results too: the model should see "404 property not found".
+//
+// Every success is reported as 200 (the transport does not expose 201 or
+// 204), and a non-2xx body is kept up to 2 KiB, not the full response cap.
 type Result struct {
 	Status      int    `json:"status"`
 	ContentType string `json:"content_type,omitempty"`
@@ -258,6 +261,20 @@ func New(m Manifest, doc *spec.Document, opts ...Option) (*Connector, error) {
 			return nil, fmt.Errorf("connector %s: tools.include names %q, which the document does not offer", m.Slug, want)
 		}
 	}
+	// An exclude that matches nothing usually means the document renamed
+	// the operation, and the tool it was meant to hide is now offered.
+	for _, drop := range m.Tools.Exclude {
+		found := false
+		for _, op := range doc.Operations {
+			if drop == op.ID || drop == op.ShortID() || drop == toolName(m, op) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("connector %s: tools.exclude names %q, which the document does not offer", m.Slug, drop)
+		}
+	}
 	return c, nil
 }
 
@@ -293,7 +310,7 @@ var nonName = regexp.MustCompile(`[^A-Za-z0-9]+`)
 
 func toolName(m Manifest, op spec.Operation) string {
 	base := ""
-	for _, key := range []string{op.ID, op.ShortID()} {
+	for _, key := range []string{op.ShortID(), op.ID} { // the full ID wins
 		if n, ok := m.Tools.Names[key]; ok && key != "" {
 			base = n
 		}
@@ -318,15 +335,22 @@ func camelToSnake(s string) string { return camel.ReplaceAllString(s, "${1}_${2}
 
 // reserved headers are set by the connector, never by the model.
 var reserved = map[string]bool{
-	"authorization": true, "content-type": true, "accept": true,
-	"content-length": true, "host": true, "cookie": true,
+	"authorization": true, "proxy-authorization": true, "content-type": true,
+	"accept": true, "content-length": true, "transfer-encoding": true,
+	"connection": true, "te": true, "upgrade": true, "trailer": true,
+	"host": true, "cookie": true, "forwarded": true,
+}
+
+func reservedHeader(name string) bool {
+	n := strings.ToLower(name)
+	return reserved[n] || strings.HasPrefix(n, "x-forwarded-")
 }
 
 func (c *Connector) isAuthParam(p spec.Parameter) bool {
 	a := c.manifest.Auth
 	switch p.In {
 	case "header":
-		if reserved[strings.ToLower(p.Name)] {
+		if reservedHeader(p.Name) {
 			return true
 		}
 		return a.Type == AuthHeader && strings.EqualFold(p.Name, a.Name)
@@ -576,6 +600,9 @@ func (c *Connector) Execute(ctx context.Context, creds Credentials, name string,
 	if strings.Contains(path, "{") {
 		return Result{}, ErrInvalidArguments.New(ctx).Field("path", "a path argument is missing")
 	}
+	if hasDotSegment(path) {
+		return Result{}, ErrInvalidArguments.New(ctx).Field("path", "path arguments must not form . or .. segments")
+	}
 	if t.bodyFlat && (len(bodyFields) > 0 || t.Method == http.MethodPost || t.Method == http.MethodPut || t.Method == http.MethodPatch) {
 		b, err := json.Marshal(bodyFields)
 		if err != nil {
@@ -586,7 +613,16 @@ func (c *Connector) Execute(ctx context.Context, creds Credentials, name string,
 	if err := c.authorize(ctx, creds, headers, query); err != nil {
 		return Result{}, err
 	}
-	return c.send(ctx, t.Method, path, query, headers, body)
+	return c.send(ctx, t.Method, path, t.Path, query, headers, body)
+}
+
+func hasDotSegment(path string) bool {
+	for _, seg := range strings.Split(path, "/") {
+		if seg == "." || seg == ".." || strings.EqualFold(seg, "%2e") || strings.EqualFold(seg, "%2e%2e") {
+			return true
+		}
+	}
+	return false
 }
 
 func scalar(raw json.RawMessage) (string, bool) {
@@ -695,8 +731,13 @@ func (c *Connector) authorize(ctx context.Context, creds Credentials, headers ht
 	return nil
 }
 
-func (c *Connector) send(ctx context.Context, method, path string, query url.Values, headers http.Header, body []byte) (Result, error) {
+// send issues one request. path is the filled-in path; logPath is its
+// template, which is what reaches logs (a check path can hold a key).
+func (c *Connector) send(ctx context.Context, method, path, logPath string, query url.Values, headers http.Header, body []byte) (Result, error) {
 	full := c.base.String() + path
+	if u, err := url.Parse(full); err != nil || u.Host != c.base.Host || u.Scheme != c.base.Scheme || u.User != nil {
+		return Result{}, ErrInvalidArguments.New(ctx).Field("path", "does not stay on the app's host")
+	}
 	req := hit.GET[hit.AnyError](full).
 		Method(method).
 		Client(c.client).
@@ -731,7 +772,7 @@ func (c *Connector) send(ctx context.Context, method, path string, query url.Val
 			return r, nil
 		}
 	}
-	return Result{}, ErrRequestFailed.New(ctx).AddError(err).AddAttrs(errs.String("connector", c.manifest.Slug), errs.String("method", method), errs.String("path", path))
+	return Result{}, ErrRequestFailed.New(ctx).AddError(err).AddAttrs(errs.String("connector", c.manifest.Slug), errs.String("method", method), errs.String("path", logPath))
 }
 
 // result keeps the status hit reported for errors; for 2xx hit does not
@@ -766,12 +807,15 @@ func (c *Connector) Check(ctx context.Context, creds Credentials) error {
 		}
 		path = strings.ReplaceAll(path, "{"+name+"}", url.PathEscape(v))
 	}
+	if hasDotSegment(path) {
+		return ErrMissingCredentials.New(ctx).Field("api_key", "is not a valid key")
+	}
 	headers := http.Header{}
 	query := url.Values{}
 	if err := c.authorize(ctx, creds, headers, query); err != nil {
 		return err
 	}
-	r, err := c.send(ctx, chk.Method, path, query, headers, nil)
+	r, err := c.send(ctx, chk.Method, path, chk.Path, query, headers, nil)
 	if err != nil {
 		return ErrCheckUnavailable.New(ctx).AddError(err)
 	}
@@ -793,6 +837,9 @@ func limitedClient(base *http.Client, max int64) *http.Client {
 	if base != nil {
 		*c = *base
 	}
+	// One Connector serves every person: cookies one person's calls set
+	// must not ride along on another's.
+	c.Jar = nil
 	rt := c.Transport
 	if rt == nil {
 		rt = http.DefaultTransport
