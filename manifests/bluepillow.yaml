@@ -1,0 +1,34 @@
+# Blue Pillow B2A: hotel and stay discovery for agents.
+# Docs: https://b2a.bluepillow.com/docs/api/keys
+#
+# Why a manifest at all: the published OpenAPI document declares no
+# securitySchemes, so nothing in it says the key must be sent as
+# "Authorization: Bearer <key>". Every other shape is answered 401
+# "No API key provided" (or "missing bearer" on /v1/keys/{key}/stats).
+slug: bluepillow
+name: Blue Pillow Hotels & Stays
+description: Hotel and stay discovery, live offer comparison, recommendations, validation and tracked booking handoff.
+spec: https://api.b2a.bluepillow.com/v1/openapi.json
+base_url: https://api.b2a.bluepillow.com
+docs: https://b2a.bluepillow.com/docs/api/keys
+auth:
+  type: bearer
+  fields:
+    - name: api_key
+      label: B2A API key
+      help: >-
+        A permanent anonymous key (pk_anon_...). Generate one at
+        https://b2a.bluepillow.com/ or with POST https://api.b2a.bluepillow.com/v1/keys.
+        Blue Pillow says it only identifies a rate-limit bucket.
+      url: https://b2a.bluepillow.com/
+      public: true
+check:
+  method: GET
+  path: /v1/keys/{api_key}/stats
+  # Without "Bearer" the endpoint answers 401 "missing bearer"; a
+  # well-formed key it does not know is 404.
+  rejected_status: [401, 403, 404]
+tools:
+  exclude:
+    - health        # unauthenticated liveness probe
+    - create_key    # mints credentials; not a tool for a connected account

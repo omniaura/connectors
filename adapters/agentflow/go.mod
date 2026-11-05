@@ -1,0 +1,27 @@
+module github.com/omniaura/connectors/adapters/agentflow
+
+go 1.27
+
+replace github.com/omniaura/connectors => ../..
+
+require (
+	github.com/omniaura/agentflow v0.13.1-0.20261029051851-98b963c73c56
+	github.com/omniaura/connectors v0.0.0-00010101000000-000000000000
+	github.com/omniaura/go-kit/errs v0.0.0-20261102232225-be13686ce86e
+)
+
+require (
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/omniaura/go-kit/mapcache v0.0.0-20261102232225-be13686ce86e // indirect
+	github.com/omniaura/go-kit/net v0.0.0-20261102232225-be13686ce86e // indirect
+	github.com/redis/go-redis/v9 v9.21.0 // indirect
+	github.com/rs/xid v1.6.0 // indirect
+	github.com/rs/zerolog v1.34.0 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/time v0.15.0 // indirect
+)
