@@ -1,0 +1,94 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Stays (fixture modelled on a FastAPI app)", "version": "1"},
+  "paths": {
+    "/v1/health": {
+      "get": {"operationId": "health_v1_health_get", "summary": "Health", "responses": {"200": {"description": "ok"}}}
+    },
+    "/v1/keys": {
+      "post": {
+        "operationId": "create_key_v1_keys_post", "summary": "Create Key",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "properties": {"agent": {"type": "string"}}}}}},
+        "responses": {"201": {"description": "created"}}
+      }
+    },
+    "/v1/keys/{key}/stats": {
+      "get": {
+        "operationId": "key_stats_v1_keys__key__stats_get", "summary": "Key Stats",
+        "parameters": [{"name": "key", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/v1/properties/{property_id}": {
+      "get": {
+        "operationId": "get_property_v1_properties__property_id__get",
+        "summary": "Get Property",
+        "description": "Get canonical details for one property.",
+        "parameters": [
+          {"name": "property_id", "in": "path", "required": true, "schema": {"type": "string"}, "description": "Property ID, normally prefixed prop_."},
+          {"name": "include", "in": "query", "schema": {"type": "array", "items": {"type": "string"}}, "explode": false},
+          {"name": "language", "in": "query", "schema": {"$ref": "#/components/schemas/Language"}},
+          {"name": "authorization", "in": "header", "schema": {"type": "string"}},
+          {"name": "session", "in": "cookie", "schema": {"type": "string"}}
+        ],
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/v1/search/stays": {
+      "post": {
+        "operationId": "search_stays_v1_search_stays_post",
+        "summary": "Search Stays",
+        "parameters": [
+          {"name": "authorization", "in": "header", "schema": {"type": "string"}},
+          {"name": "Idempotency-Key", "in": "header", "schema": {"type": "string"}}
+        ],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SearchRequest"}}}},
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/v1/tree": {
+      "post": {
+        "operationId": "tree_v1_tree_post",
+        "summary": "Tree",
+        "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Node"}}}},
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/v1/upload": {
+      "post": {
+        "operationId": "upload_v1_upload_post",
+        "requestBody": {"required": true, "content": {"multipart/form-data": {"schema": {"type": "object"}}}},
+        "responses": {"200": {"description": "ok"}}
+      }
+    },
+    "/v1/old": {
+      "get": {"operationId": "old_v1_old_get", "deprecated": true, "responses": {"200": {"description": "ok"}}}
+    }
+  },
+  "components": {
+    "schemas": {
+      "Language": {"type": "string", "enum": ["en", "it", "fr"], "example": "en", "x-internal": true},
+      "Guests": {
+        "type": "object",
+        "properties": {"adults": {"type": "integer", "minimum": 1}, "children_ages": {"type": "array", "items": {"type": "integer"}}},
+        "required": ["adults"]
+      },
+      "SearchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {"type": "string", "description": "Free-text destination."},
+          "guests": {"$ref": "#/components/schemas/Guests"},
+          "currency": {"type": "string", "nullable": true},
+          "request_id": {"type": "string", "readOnly": true}
+        },
+        "required": ["query", "request_id"]
+      },
+      "Node": {
+        "type": "object",
+        "properties": {"name": {"type": "string"}, "children": {"type": "array", "items": {"$ref": "#/components/schemas/Node"}}},
+        "additionalProperties": true
+      }
+    }
+  }
+}
