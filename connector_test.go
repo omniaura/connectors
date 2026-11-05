@@ -1,8 +1,11 @@
 package connectors_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -14,6 +17,8 @@ import (
 
 	"github.com/omniaura/connectors"
 	"github.com/omniaura/connectors/spec"
+	"github.com/omniaura/go-kit/errs"
+	"github.com/rs/zerolog"
 )
 
 const fixtureKey = "pk_anon_fixture_0123456789"
@@ -489,6 +494,50 @@ func TestDotSegmentsFromAdjacentArguments(t *testing.T) {
 	_, err = c.Execute(context.Background(), connectors.Credentials{"api_key": "k"}, "DOTS_PAIR", json.RawMessage(`{"a":".","b":"."}`))
 	if !connectors.ErrInvalidArguments.Is(err) {
 		t.Fatalf("a . and . must not form ..: %v", err)
+	}
+}
+
+func TestTransportErrorsDoNotCarryTheKey(t *testing.T) {
+	dead := httptest.NewServer(http.NotFoundHandler())
+	addr := dead.URL
+	dead.Close() // nothing listens here now
+	const key = "pk_secret_in_url_42"
+	m := manifest(connectors.Auth{Type: connectors.AuthQuery, Name: "key"})
+	c, err := connectors.New(m, fixtureDoc(t), connectors.WithBaseURL(addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Capture what errs writes: the log line and every sink record.
+	var logged bytes.Buffer
+	ctx := zerolog.New(&logged).WithContext(context.Background())
+	var recorded []string
+	errs.AddSink(errs.SinkFunc(func(_ context.Context, r errs.Record) {
+		b, _ := json.Marshal(r)
+		recorded = append(recorded, string(b)+" "+r.Detail())
+	}))
+	t.Cleanup(errs.ResetSinks)
+	_, execErr := c.Execute(ctx, connectors.Credentials{"api_key": key}, "STAYS_GET_PROPERTY", json.RawMessage(`{"property_id":"p"}`))
+	checkErr := c.Check(ctx, connectors.Credentials{"api_key": key})
+	if !connectors.ErrRequestFailed.Is(execErr) || !connectors.ErrCheckUnavailable.Is(checkErr) {
+		t.Fatalf("exec=%v check=%v", execErr, checkErr)
+	}
+	for _, err := range []error{execErr, checkErr} {
+		var e *errs.Error
+		if !errors.As(err, &e) {
+			t.Fatalf("not an errs.Error: %v", err)
+		}
+		e.Record(true).Emit("test")
+		diag, _ := json.Marshal(errs.Diagnose(e))
+		seen := err.Error() + " " + e.Detail() + " " + fmt.Sprint(e.Attrs()) + " " + string(diag)
+		if strings.Contains(seen, key) {
+			t.Fatalf("key leaked into server-side error detail: %s", seen)
+		}
+	}
+	if logged.Len() == 0 || len(recorded) == 0 {
+		t.Fatalf("nothing was logged (%d bytes) or recorded (%d): the check below would prove nothing", logged.Len(), len(recorded))
+	}
+	if strings.Contains(logged.String(), key) || strings.Contains(strings.Join(recorded, "\n"), key) {
+		t.Fatalf("key leaked into the log line or an error record:\n%s\n%v", logged.String(), recorded)
 	}
 }
 

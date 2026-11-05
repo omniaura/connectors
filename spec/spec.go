@@ -118,11 +118,23 @@ func Parse(data []byte) (*Document, error) {
 		if !ok {
 			continue
 		}
-		if _, isRef := item["$ref"]; isRef {
-			d.nodes = 0
-			if item, ok = d.resolve(item, 0, nil).(map[string]any); !ok {
-				continue
+		// Follow a path-item $ref without expanding it: each operation then
+		// expands its own parameters and body under its own budget.
+		for hops := 0; ok && hops < MaxRefDepth; hops++ {
+			ref, isRef := item["$ref"].(string)
+			if !isRef {
+				break
 			}
+			target, found := d.pointer(ref)
+			if !found {
+				ok = false
+				break
+			}
+			item, ok = target.(map[string]any)
+		}
+		if _, still := item["$ref"]; !ok || still {
+			d.Skipped = append(d.Skipped, Skip{Path: path, Reason: "path item $ref does not resolve"})
+			continue
 		}
 		shared := asSlice(item["parameters"])
 		for _, method := range methods {
@@ -194,6 +206,9 @@ func (d *Document) operation(method, path string, raw map[string]any, shared []a
 				return fmt.Sprintf("parameter %q has unsupported location %q", param.Name, param.In)
 			}
 			if s, ok := m["schema"].(map[string]any); ok {
+				if t, _ := s["type"].(string); t == "object" && param.In != "header" {
+					return fmt.Sprintf("parameter %q is an object; its serialization is not supported", param.Name)
+				}
 				param.Schema = Clean(s)
 			} else if _, ok := m["content"]; ok {
 				return fmt.Sprintf("parameter %q uses content encoding", param.Name)

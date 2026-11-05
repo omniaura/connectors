@@ -271,6 +271,12 @@ func New(m Manifest, doc *spec.Document, opts ...Option) (*Connector, error) {
 				break
 			}
 		}
+		for _, s := range doc.Skipped {
+			short := spec.Operation{ID: s.OperationID, Method: s.Method, Path: s.Path}.ShortID()
+			if s.OperationID != "" && (drop == s.OperationID || drop == short) {
+				found = true // skipped anyway, so still not offered
+			}
+		}
 		if !found {
 			return nil, fmt.Errorf("connector %s: tools.exclude names %q, which the document does not offer", m.Slug, drop)
 		}
@@ -618,7 +624,10 @@ func (c *Connector) Execute(ctx context.Context, creds Credentials, name string,
 
 func hasDotSegment(path string) bool {
 	for _, seg := range strings.Split(path, "/") {
-		if seg == "." || seg == ".." || strings.EqualFold(seg, "%2e") || strings.EqualFold(seg, "%2e%2e") {
+		if dec, err := url.PathUnescape(seg); err == nil {
+			seg = dec
+		}
+		if seg == "." || seg == ".." {
 			return true
 		}
 	}
@@ -772,7 +781,10 @@ func (c *Connector) send(ctx context.Context, method, path, logPath string, quer
 			return r, nil
 		}
 	}
-	return Result{}, ErrRequestFailed.New(ctx).AddError(err).AddAttrs(errs.String("connector", c.manifest.Slug), errs.String("method", method), errs.String("path", logPath))
+	// A transport error (*url.Error) carries the full request URL, which can
+	// hold a key in the query or in a check path. Keep it as a private cause:
+	// errors.Is still works, its text stays out of logs and records.
+	return Result{}, ErrRequestFailed.New(ctx).AddPrivateError(err).AddAttrs(errs.String("connector", c.manifest.Slug), errs.String("method", method), errs.String("path", logPath))
 }
 
 // result keeps the status hit reported for errors; for 2xx hit does not

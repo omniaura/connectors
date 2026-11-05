@@ -87,6 +87,7 @@ properties) are dropped and 3.0 `nullable` is folded into `type`. A JSON
 object body with fixed properties is flattened into top-level arguments;
 anything else is a single `body` argument. Operations the library cannot
 call faithfully (form or multipart bodies, query styles other than `form`,
+object-valued query parameters,
 deprecated operations, schemas too large to expand) are listed
 by `Skipped()` with the reason, never guessed at.
 

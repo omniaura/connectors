@@ -98,6 +98,33 @@ func TestFanOutIsBounded(t *testing.T) {
 	}
 }
 
+func TestPathItemRefsUseTheOperationBudget(t *testing.T) {
+	schemas := `"S30":{"type":"string"}`
+	for i := 29; i >= 0; i-- {
+		schemas += fmt.Sprintf(`,"S%d":{"type":"object","properties":{"l":{"$ref":"#/components/schemas/S%d"},"r":{"$ref":"#/components/schemas/S%d"}}}`, i, i+1, i+1)
+	}
+	doc, err := spec.Parse([]byte(`{"openapi":"3.1.0","paths":{"/x":{"$ref":"#/components/pathItems/P"},"/y":{"$ref":"#/components/pathItems/Q"}},"components":{"pathItems":{"P":{"post":{"requestBody":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/S0"}}}}}},"Q":{"get":{"operationId":"q"}}},"schemas":{` + schemas + `}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Operations) != 1 || doc.Operations[0].ID != "q" {
+		t.Fatalf("operations = %+v", doc.Operations)
+	}
+	if len(doc.Skipped) != 1 || !strings.Contains(doc.Skipped[0].Reason, "too large") {
+		t.Fatalf("skipped = %+v", doc.Skipped)
+	}
+}
+
+func TestObjectQueryParametersAreSkipped(t *testing.T) {
+	doc, err := spec.Parse([]byte(`{"openapi":"3.1.0","paths":{"/a":{"get":{"parameters":[{"name":"filter","in":"query","schema":{"type":"object"}}]}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Operations) != 0 || len(doc.Skipped) != 1 {
+		t.Fatalf("operations = %+v skipped = %+v", doc.Operations, doc.Skipped)
+	}
+}
+
 func TestPathsMustStayOnTheHost(t *testing.T) {
 	doc, err := spec.Parse([]byte(`{"openapi":"3.1.0","paths":{"@evil.example/x":{"get":{}},"//evil.example/y":{"get":{}},"/a?b=1":{"get":{}},"/fine":{"get":{}}}}`))
 	if err != nil {
