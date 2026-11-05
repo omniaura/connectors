@@ -207,13 +207,18 @@ func checkBaseURL(raw string) error {
 	if err != nil || u.Host == "" {
 		return fmt.Errorf("invalid base URL %q", raw)
 	}
-	if u.Scheme != "https" && !isLoopback(u.Hostname()) {
-		return fmt.Errorf("base URL %q must use https", raw)
+	if !allowedScheme(u) {
+		return fmt.Errorf("base URL %q must use https (http only on loopback)", raw)
 	}
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("base URL %q must not carry credentials, a query or a fragment", raw)
 	}
 	return nil
+}
+
+// allowedScheme accepts https, and http only for a loopback host.
+func allowedScheme(u *url.URL) bool {
+	return u.Scheme == "https" || (u.Scheme == "http" && isLoopback(u.Hostname()))
 }
 
 func isLoopback(host string) bool {

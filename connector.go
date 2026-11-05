@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/omniaura/connectors/spec"
 	"github.com/omniaura/go-kit/errs"
@@ -36,6 +37,8 @@ const (
 	DefaultMaxSpecBytes = 16 << 20
 	maxDescription      = 1024
 	maxToolName         = 64
+	// upstreamBodyCap is how much of a non-2xx body go-kit hit keeps.
+	upstreamBodyCap = 2048
 )
 
 // Credentials are a person's values for the manifest's auth fields.
@@ -178,8 +181,8 @@ func fetchSpec(ctx context.Context, ref string, o options) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if u.Scheme != "https" && !isLoopback(u.Hostname()) {
-			return nil, fmt.Errorf("spec URL must use https")
+		if !allowedScheme(u) {
+			return nil, fmt.Errorf("spec URL must use https (http only on loopback)")
 		}
 		var out []byte
 		err = hit.GET[hit.AnyError](ref).
@@ -501,7 +504,11 @@ func describe(op spec.Operation) string {
 	}
 	out := strings.Join(parts, " ")
 	if len(out) > maxDescription {
-		out = strings.TrimSpace(out[:maxDescription-1]) + "…"
+		cut := maxDescription - len("…")
+		for cut > 0 && !utf8.RuneStart(out[cut]) {
+			cut-- // never split a multi-byte rune
+		}
+		out = strings.TrimSpace(out[:cut]) + "…"
 	}
 	return out
 }
@@ -624,11 +631,16 @@ func (c *Connector) Execute(ctx context.Context, creds Credentials, name string,
 
 func hasDotSegment(path string) bool {
 	for _, seg := range strings.Split(path, "/") {
-		if dec, err := url.PathUnescape(seg); err == nil {
-			seg = dec
+		dec, err := url.PathUnescape(seg)
+		if err != nil {
+			dec = seg
 		}
-		if seg == "." || seg == ".." {
-			return true
+		// An escaped "/" (%2F) hides a segment boundary from this split; a
+		// server that decodes it before routing would see the dots.
+		for _, part := range strings.Split(dec, "/") {
+			if part == "." || part == ".." {
+				return true
+			}
 		}
 	}
 	return false
@@ -775,7 +787,10 @@ func (c *Connector) send(ctx context.Context, method, path, logPath string, quer
 	if errors.As(err, &e) {
 		if up, ok := e.UpstreamInfo(); ok && up.Status > 0 {
 			r := c.result(up.Status, []byte(up.Body))
-			if strings.HasSuffix(up.Body, "…") {
+			// hit keeps the first upstreamBodyCap bytes and appends "…", so a
+			// kept body of exactly that length is the only truncated shape.
+			if len(up.Body) == upstreamBodyCap+len("…") && strings.HasSuffix(up.Body, "…") {
+				r.Body = r.Body[:upstreamBodyCap]
 				r.Truncated = true
 			}
 			return r, nil

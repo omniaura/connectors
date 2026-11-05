@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/omniaura/connectors"
 	"github.com/omniaura/connectors/spec"
@@ -435,6 +436,8 @@ func TestManifestValidation(t *testing.T) {
 		"slug: ok\nspec: x\nauth: {type: bearer}\nunknown_key: 1\n",
 		"slug: ok\nspec: x\nbase_url: https://x.example\nauth: {type: bearer}\ncheck: {path: /x, rejected_status: [500]}\n",
 		"slug: ok\nspec: x\nauth: {type: bearer}\n", // credentials need a base_url the manifest names
+		"slug: ok\nspec: x\nbase_url: ftp://localhost\nauth: {type: bearer}\n",
+		"slug: ok\nspec: x\nbase_url: ws://127.0.0.1\nauth: {type: bearer}\n",
 	}
 	for _, src := range bad {
 		if _, err := connectors.ParseManifest([]byte(src)); err == nil {
@@ -444,6 +447,9 @@ func TestManifestValidation(t *testing.T) {
 	m, err := connectors.ParseManifest([]byte("slug: ok\nspec: x\nbase_url: https://x.example\nauth: {type: basic}\n"))
 	if err != nil || len(m.Auth.Fields) != 2 {
 		t.Fatalf("basic defaults: %v %+v", err, m.Auth)
+	}
+	if _, err := connectors.ParseManifest([]byte("slug: ok\nspec: x\nbase_url: http://localhost:8080\nauth: {type: bearer}\n")); err != nil {
+		t.Fatalf("http on loopback is allowed for local development: %v", err)
 	}
 }
 
@@ -538,6 +544,56 @@ func TestTransportErrorsDoNotCarryTheKey(t *testing.T) {
 	}
 	if strings.Contains(logged.String(), key) || strings.Contains(strings.Join(recorded, "\n"), key) {
 		t.Fatalf("key leaked into the log line or an error record:\n%s\n%v", logged.String(), recorded)
+	}
+}
+
+func TestDescriptionTruncationKeepsRunesWhole(t *testing.T) {
+	long := strings.Repeat("a", 1020) + strings.Repeat("é", 20)
+	doc, err := spec.Parse([]byte(`{"openapi":"3.1.0","paths":{"/x":{"get":{"operationId":"x","summary":"` + long + `"}}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := connectors.New(connectors.Manifest{Slug: "d", Spec: "inline", Auth: connectors.Auth{Type: connectors.AuthNone}, BaseURL: "https://d.example"}, doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := c.Tools()[0].Description
+	if !utf8.ValidString(d) || strings.ContainsRune(d, utf8.RuneError) || len(d) > 1024 || !strings.HasSuffix(d, "…") {
+		t.Fatalf("description: valid=%v len=%d tail=%q", utf8.ValidString(d), len(d), d[len(d)-8:])
+	}
+}
+
+func TestErrorBodyTruncationIsExact(t *testing.T) {
+	body := `Something went wrong…`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+	c := newConnector(t, connectors.Auth{Type: connectors.AuthNone}, srv)
+	call := func() connectors.Result {
+		r, err := c.Execute(context.Background(), nil, "STAYS_GET_PROPERTY", json.RawMessage(`{"property_id":"p"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if r := call(); r.Truncated || string(r.Body) != body {
+		t.Fatalf("an error body that ends in … is not truncated: %+v %q", r.Truncated, r.Body)
+	}
+	body = strings.Repeat("x", 5000)
+	if r := call(); !r.Truncated || len(r.Body) != 2048 {
+		t.Fatalf("a long error body is truncated: %v %d", r.Truncated, len(r.Body))
+	}
+}
+
+func TestEncodedSlashCannotHideDotSegments(t *testing.T) {
+	c := newConnector(t, connectors.Auth{Type: connectors.AuthBearer}, bearerOnly(t, &recorder{}))
+	for _, id := range []string{"../admin", "x/../../admin", "./x"} {
+		_, err := c.Execute(context.Background(), connectors.Credentials{"api_key": fixtureKey}, "STAYS_GET_PROPERTY", json.RawMessage(`{"property_id":"`+id+`"}`))
+		if !connectors.ErrInvalidArguments.Is(err) {
+			t.Fatalf("%q: %v", id, err)
+		}
 	}
 }
 

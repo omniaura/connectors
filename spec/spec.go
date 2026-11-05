@@ -206,7 +206,7 @@ func (d *Document) operation(method, path string, raw map[string]any, shared []a
 				return fmt.Sprintf("parameter %q has unsupported location %q", param.Name, param.In)
 			}
 			if s, ok := m["schema"].(map[string]any); ok {
-				if t, _ := s["type"].(string); t == "object" && param.In != "header" {
+				if t, _ := s["type"].(string); t == "object" {
 					return fmt.Sprintf("parameter %q is an object; its serialization is not supported", param.Name)
 				}
 				param.Schema = Clean(s)

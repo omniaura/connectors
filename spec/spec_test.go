@@ -116,11 +116,11 @@ func TestPathItemRefsUseTheOperationBudget(t *testing.T) {
 }
 
 func TestObjectQueryParametersAreSkipped(t *testing.T) {
-	doc, err := spec.Parse([]byte(`{"openapi":"3.1.0","paths":{"/a":{"get":{"parameters":[{"name":"filter","in":"query","schema":{"type":"object"}}]}}}}`))
+	doc, err := spec.Parse([]byte(`{"openapi":"3.1.0","paths":{"/a":{"get":{"parameters":[{"name":"filter","in":"query","schema":{"type":"object"}}]}},"/h":{"get":{"parameters":[{"name":"X-Meta","in":"header","schema":{"type":"object"}}]}}}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(doc.Operations) != 0 || len(doc.Skipped) != 1 {
+	if len(doc.Operations) != 0 || len(doc.Skipped) != 2 {
 		t.Fatalf("operations = %+v skipped = %+v", doc.Operations, doc.Skipped)
 	}
 }
